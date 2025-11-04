@@ -1,0 +1,16 @@
+{
+  "name": null,
+  "age": null,
+  "date": null,
+  "time": null,
+  "category": null,
+  "sub_category": null,
+  "location": null,
+  "location_coords": null,
+  "location_address": null,
+  "awaiting_address": false,
+  "confirmed": false,
+  "greeted": false,
+  "state": "main_menu",
+  "last_interaction": null
+}
