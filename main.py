@@ -231,8 +231,8 @@ async def webhook_handler(request: Request):
                 session_data[user_number] = sess
                 friendly_loc = sess.get("location_address") or sess.get("location_coords")
                 send_text(user_number, humanize_response("", kind="ack_location", location=friendly_loc))
-                if all([sess.get("date"), sess.get("time"), sess.get("category"), sess.get("sub_category"), sess.get("location")]) and sess.get("time") not in [None,"","00:00"]:
-                    summary_text = (f"• Date: {sess['date']}\n• Time: {sess['time']}\n• Service: {sess['category'].title()}\n• Sub-service: {sess['sub_category'].title()}\n• Location: {sess['location']}")
+                if all([sess.get("date"), sess.get("time"), sess.get("category"), sess.get("sub_category"), sess.get("location"), sess.get("age")]) and sess.get("time") not in [None,"","00:00"]:
+                    summary_text = (f"• Date: {sess['date']}\n• Time: {sess['time']}\n• Age: {sess.get('age')}\n• Service: {sess['category'].title()}\n• Sub-service: {sess['sub_category'].title()}\n• Location: {sess['location']}")
                     send_text(user_number, humanize_response("", kind="confirm_summary", summary=summary_text, name=sess.get("name")))
                     send_buttons(user_number, "Confirm booking?", {"confirm_yes":"Yes","confirm_no":"No"})
                     sess["state"]="confirming"
@@ -340,8 +340,8 @@ async def webhook_handler(request: Request):
             sess["last_interaction"] = "typed_address"
             session_data[user_number]=sess
             send_text(user_number, humanize_response("", kind="ack_location", location=address_text, name=sess.get("name")))
-            if all([sess.get("date"), sess.get("time"), sess.get("category"), sess.get("sub_category"), sess.get("location")]) and sess.get("time") not in [None,"","00:00"]:
-                summary_text = (f"• Date: {sess['date']}\n• Time: {sess['time']}\n• Service: {sess['category'].title()}\n• Sub-service: {sess['sub_category'].title()}\n• Location: {sess['location']}")
+            if all([sess.get("date"), sess.get("time"), sess.get("category"), sess.get("sub_category"), sess.get("location"), sess.get("age")]) and sess.get("time") not in [None,"","00:00"]:
+                summary_text = (f"• Date: {sess['date']}\n• Time: {sess['time']}\n• Age: {sess.get('age')}\n• Service: {sess['category'].title()}\n• Sub-service: {sess['sub_category'].title()}\n• Location: {sess['location']}")
                 send_text(user_number, humanize_response("", kind="confirm_summary", summary=summary_text, name=sess.get("name")))
                 send_buttons(user_number, "Confirm booking?", {"confirm_yes":"Yes","confirm_no":"No"})
                 sess["state"]="confirming"
@@ -387,6 +387,36 @@ async def webhook_handler(request: Request):
         if prev_entities is None:
             prev_entities = make_empty_session()
 
+        # capture typed age (if awaiting)
+        if prev_entities and prev_entities.get("awaiting_field") == "age" and "text" in message:
+            age_text = (user_text or "").strip()
+            m = re.search(r"(\d{1,3})", age_text)
+            if not m:
+                send_text(user_number, "I didn't catch that. Please type the age as a number (e.g. 32).")
+                return {"status":"ok"}
+            try:
+                age_val = int(m.group(1))
+            except Exception:
+                send_text(user_number, "Please provide a valid numeric age (e.g. 32).")
+                return {"status":"ok"}
+            if age_val <= 0 or age_val > 120:
+                send_text(user_number, "That age looks off — please enter an age between 1 and 120.")
+                return {"status":"ok"}
+            sess = session_data.get(user_number,{}) or make_empty_session()
+            sess["age"] = str(age_val)
+            sess["awaiting_field"] = None
+            sess["last_interaction"] = "typed_age"
+            session_data[user_number] = sess
+            send_text(user_number, f"Thanks — noted age: {age_val}.")
+            # If all required fields now present, show summary & ask confirmation
+            if all([sess.get("date"), sess.get("time"), sess.get("category"), sess.get("sub_category"), sess.get("location"), sess.get("age")]) and sess.get("time") not in [None, "", "00:00"]:
+                summary_text = (f"• Date: {sess['date']}\n• Time: {sess['time']}\n• Age: {sess.get('age')}\n• Service: {sess['category'].title()}\n• Sub-service: {sess['sub_category'].title()}\n• Location: {sess['location']}")
+                send_text(user_number, humanize_response("", kind="confirm_summary", summary=summary_text, name=sess.get("name")))
+                send_buttons(user_number, "Confirm booking?", {"confirm_yes":"Yes","confirm_no":"No"})
+                sess["state"] = "confirming"
+                session_data[user_number] = sess
+                return {"status":"ok"}
+
         mapped_text = BUTTON_MAPPINGS.get(user_text, user_text)
         mapped_text = str(mapped_text).strip().lower()
         for prefix in ("date_","time_","confirm_","btn_"):
@@ -424,8 +454,8 @@ async def webhook_handler(request: Request):
             session_data[user_number] = prev_entities
             send_text(user_number, f"Date set to {chosen_date}.")
 
-            # priority: ask TIME first, then LOCATION (then category/sub_category if still missing)
-            priority = ["time", "location", "category", "sub_category"]
+            # priority: ask TIME first, then AGE, then LOCATION (then category/sub_category if still missing)
+            priority = ["time", "age", "location", "category", "sub_category"]
 
             def is_missing(field):
                 val = prev_entities.get(field)
@@ -446,6 +476,13 @@ async def webhook_handler(request: Request):
                         "time_evening": "Evening"
                     })
                     prev_entities["awaiting_field"] = "time"
+                    session_data[user_number] = prev_entities
+                    return {"status":"ok"}
+
+            elif next_field == "age":
+                if prev_entities.get("awaiting_field") is None:
+                    send_text(user_number, "Please type the patient's age (in years).")
+                    prev_entities["awaiting_field"] = "age"
                     session_data[user_number] = prev_entities
                     return {"status":"ok"}
 
@@ -529,7 +566,7 @@ async def webhook_handler(request: Request):
             send_text(user_number, f"Got it — {mapped_text.title()} selected.")
 
             # compute next missing field; if date is still missing, ask for date next
-            priority_after_time = ["date", "location", "category", "sub_category"]
+            priority_after_time = ["date", "age", "location", "category", "sub_category"]
             def is_missing_field(field):
                 v = prev_entities.get(field)
                 return (v is None) or (str(v).strip() == "") or (field == "time" and v == "00:00")
@@ -548,6 +585,11 @@ async def webhook_handler(request: Request):
                         "date_pick": "Pick another date"
                     })
                     prev_entities["awaiting_field"] = "date"
+                    session_data[user_number] = prev_entities
+            elif next_field == "age":
+                if prev_entities.get("awaiting_field") is None:
+                    send_text(user_number, "Please type the patient's age (in years).")
+                    prev_entities["awaiting_field"] = "age"
                     session_data[user_number] = prev_entities
             elif next_field == "location":
                 sess = session_data.get(user_number) or prev_entities
@@ -599,8 +641,8 @@ async def webhook_handler(request: Request):
             else:
                 # nothing else needed — if everything filled, confirm
                 if all([prev_entities.get("date"), prev_entities.get("time"), prev_entities.get("category"),
-                        prev_entities.get("sub_category"), prev_entities.get("location")]):
-                    summary_text = (f"• Date: {prev_entities['date']}\n• Time: {prev_entities['time']}\n• Service: {prev_entities['category'].title()}\n"
+                        prev_entities.get("sub_category"), prev_entities.get("location"), prev_entities.get("age")]):
+                    summary_text = (f"• Date: {prev_entities['date']}\n• Time: {prev_entities['time']}\n• Age: {prev_entities.get('age')}\n• Service: {prev_entities['category'].title()}\n"
                                     f"• Sub-service: {prev_entities['sub_category'].title()}\n• Location: {prev_entities['location']}")
                     send_text(user_number, humanize_response("", kind="confirm_summary", summary=summary_text, name=prev_entities.get("name")))
                     send_buttons(user_number, "Confirm booking?", {"confirm_yes":"Yes","confirm_no":"No"})
@@ -641,7 +683,7 @@ async def webhook_handler(request: Request):
                 session_data[user_number] = prev_entities
 
                 # After setting date/time, ask the next missing field with same priority policy as DATE handler
-                priority = ["time", "location", "category", "sub_category"] if date_choice and not time_choice else ["location", "category", "sub_category"]
+                priority = ["time", "age", "location", "category", "sub_category"] if date_choice and not time_choice else ["age", "location", "category", "sub_category"]
 
                 def is_missing_ft(field):
                     val = prev_entities.get(field)
@@ -657,6 +699,12 @@ async def webhook_handler(request: Request):
                     if prev_entities.get("awaiting_field") is None:
                         send_buttons(user_number, "Select preferred time:", {"time_morning":"Morning","time_afternoon":"Afternoon","time_evening":"Evening"})
                         prev_entities["awaiting_field"] = "time"
+                        session_data[user_number] = prev_entities
+                    return {"status":"ok"}
+                elif next_field == "age":
+                    if prev_entities.get("awaiting_field") is None:
+                        send_text(user_number, "Please type the patient's age (in years).")
+                        prev_entities["awaiting_field"] = "age"
                         session_data[user_number] = prev_entities
                     return {"status":"ok"}
                 elif next_field == "location":
@@ -834,6 +882,12 @@ async def webhook_handler(request: Request):
                     entities["awaiting_field"] = "time"
                     session_data[user_number] = entities
 
+            elif "age" in missing or not entities.get("age"):
+                if entities.get("awaiting_field") is None:
+                    send_text(user_number, "Please type the patient's age (in years).")
+                    entities["awaiting_field"] = "age"
+                    session_data[user_number] = entities
+
             elif "category" in missing:
                 if entities.get("awaiting_field") is None:
                     # If we already sent an empathetic/general reply, avoid sending another text; just show buttons
@@ -895,8 +949,8 @@ async def webhook_handler(request: Request):
                     # if awaiting_address or awaiting_field set, just persist
                     session_data[user_number] = sess
 
-            elif all([entities.get("date"), entities.get("time"), entities.get("category"), entities.get("sub_category"), entities.get("location")]) and entities.get("time") not in [None, "", "00:00"]:
-                summary_text = (f"• Date: {entities['date']}\n• Time: {entities['time']}\n• Service: {entities['category'].title()}\n• Sub-service: {entities['sub_category'].title()}\n• Location: {entities['location']}")
+            elif all([entities.get("date"), entities.get("time"), entities.get("category"), entities.get("sub_category"), entities.get("location"), entities.get("age")]) and entities.get("time") not in [None, "", "00:00"]:
+                summary_text = (f"• Date: {entities['date']}\n• Time: {entities['time']}\n• Age: {entities.get('age')}\n• Service: {entities['category'].title()}\n• Sub-service: {entities['sub_category'].title()}\n• Location: {entities['location']}")
                 send_text(user_number, humanize_response("", kind="confirm_summary", summary=summary_text, name=entities.get("name")))
                 send_buttons(user_number, "Confirm booking?", {"confirm_yes":"Yes","confirm_no":"No"})
                 sess = session_data.get(user_number, {})

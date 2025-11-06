@@ -58,39 +58,39 @@ BUTTON_MAPPINGS = {
 # -------------------------------
 REPLY_VARIANTS = {
     "greeting": [
-        "Hey {name}! 👋 How can I help you today?",
-        "Hi {name}! 👋 Warmy here — how can I assist?",
-        "Hello {name}! I’m here for you. What would you like to do today?"
+        "Hey {name}! 👋😊 How can I help you today?",
+        "Hi {name}! 👋 Warmy here — how can I assist? 🌟",
+        "Hello {name}! 🤗 I’m here for you. What would you like to do today?"
     ],
     "ack_location": [
-        "Thanks — got your address: {location}. I’ll assign the nearest staff.",
-        "Perfect, I’ve noted {location}. I’ll find someone nearby for you.",
-        "Thanks! Location saved: {location}. We’ll route the nearest staff."
+        "Thanks — got your address: {location}. 📍 I’ll assign the nearest staff. 🏥",
+        "Perfect, I’ve noted {location}. 🚗 I’ll find someone nearby for you.",
+        "Thanks! Location saved: {location}. 🗺️ We’ll route the nearest staff."
     ],
     "confirm_summary": [
-        "✅ Here’s your appointment summary:\n{summary}\nWould you like me to confirm this now? (Yes / No)",
-        "Looks good — here’s what I have:\n{summary}\nShall I lock this in for you?"
+        "✅ Here’s your appointment summary:\n{summary}\nWould you like me to confirm this now? (Yes / No) 😊",
+        "Looks good — here’s what I have:\n{summary}\nShall I lock this in for you? 👍"
     ],
     "confirmation_yes": [
-        "✅ All set — your appointment is confirmed. If you need anything else, just ask!",
-        "Done! ✅ Appointment confirmed. Anything more I can help with?"
+        "✅ All set — your appointment is confirmed! 🎉 If you need anything else, just ask! 😊",
+        "Done! ✅ Appointment confirmed. Anything more I can help with? 💬"
     ],
     "confirmation_no": [
-        "Okay — I’ve cancelled that. Would you like to book something else?",
-        "No worries — it’s cancelled. Want to start a new booking?"
+        "Okay — I’ve cancelled that. ❌ Would you like to book something else? 🤔",
+        "No worries — it’s cancelled. Want to start a new booking? 🗓️"
     ],
     "fallback": [
-        "I didn’t quite get that — could you say it another way?",
-        "Hmm, I might’ve missed that. Can you rephrase it for me?"
+        "I didn’t quite get that — could you say it another way? 🤔",
+        "Hmm, I might’ve missed that. Can you rephrase it for me? 😊"
     ],
     "friendly_ack": [
-        "Got it — {summary}.",
-        "Perfect — {summary}.",
-        "Thanks, noted: {summary}."
+        "Got it — {summary}. 👍",
+        "Perfect — {summary}. 🌟",
+        "Thanks, noted: {summary}. 📝"
     ],
     "empathetic": [
-        "I’m sorry you’re dealing with that. I’ll help however I can.",
-        "That sounds tough — I’ll do my best to help."
+        "I’m sorry you’re dealing with that. 💙 I’ll help however I can.",
+        "That sounds tough — I’ll do my best to help. 🤗"
     ]
 }
 
@@ -107,11 +107,11 @@ def humanize_response(seed_text: str = "", kind: str = None, name: str = None, e
             return template.format(**kwargs).strip()
         # emotion-aware lightweight wrappers for generic replies
         prefix_by_emotion = {
-            "happy": ["🙂", "😊"],
-            "neutral": [""],
-            "sad": ["I’m sorry you’re going through that.", "I’m here to help."],
-            "angry": ["I hear you.", "I’ll fix this together with you."],
-            "urgent": ["I’ve got you.", "Let’s sort this quickly."],
+            "happy": ["🙂", "😊", "🎉", "😃"],
+            "neutral": ["", "🤖"],
+            "sad": ["I’m sorry you’re going through that. 💙", "I’m here to help. 🤗"],
+            "angry": ["I hear you. 💪", "I’ll fix this together with you. 🤝"],
+            "urgent": ["I’ve got you! 🚨", "Let’s sort this quickly. ⏱️"],
         }
         choices = prefix_by_emotion.get((emotion or "neutral").lower(), [""])
         chosen = random.choice(choices)
@@ -316,10 +316,38 @@ def conversational_answer(user_text: str, previous_entities: dict):
     """
     try:
         qa_prompt = f"""
-You are Warmy, a warm and friendly healthcare assistant on WhatsApp.
+You are Warmy, a warm and friendly healthcare assistant on WhatsApp. Here's your core identity and personality:
+
+SPECIAL RESPONSE FOR IDENTITY QUESTIONS:
+IF the user asks "what is warmy" OR "who are you" OR similar identity questions,
+YOU MUST RESPOND EXACTLY WITH THIS TEMPLATE:
+🤖✨ I'm Warmy, your personal healthcare assistant! I'm here to help you book medical services like home care, medicine delivery, and lab tests. I can schedule appointments, find nearby staff, and make sure you get the care you need. How can I assist you today? 🏥💙
+
+For all other questions:
+IDENTITY AND SERVICES:
+- You are Warmy, a specialized healthcare booking assistant
+- Your core services are home care, medicine delivery, and lab tests
+- You handle scheduling and find nearby medical staff
+
+PERSONALITY:
+- Warm, caring, and detail-oriented
+- Always be specific about available services
+- Use healthcare emojis thoughtfully (🏥💊🩺)
+- Keep responses friendly but professional
+
+CAPABILITIES:
+- Schedule medical appointments
+- Find nearby healthcare staff
+- Arrange medicine delivery
+- Book lab tests and home care
+- Handle location-based service routing
+
 User said: "{user_text}"
-Answer in 1-2 short sentences, empathetically and clearly. If it's a booking request, ask for the missing info.
-Keep tone human, use emojis sparingly.
+
+Respond in 1-2 short sentences. If asked about your identity, explain your healthcare focus.
+For booking requests, politely ask for any missing information.
+For general queries, be warm and helpful while staying healthcare-focused.
+Use healthcare-themed emojis when relevant (🏥 💊 🩺 💉 ⚕️ 💙).
 """
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -467,6 +495,25 @@ Your task:
 - If category is known, only allow sub_category from the allowed list below; otherwise leave sub_category null.
 - Normalize: date as YYYY-MM-DD, time as HH:MM.
 - Do NOT overwrite any already provided field.
+
+IMPORTANT BOOKING FLOW (Ask only ONE question at a time):
+
+1. If category exists but sub_category is missing, respond based on category:
+   - For "lab test": Return "Which lab test would you like to book? We offer blood tests, urine tests, COVID tests, and full body checkups. 🩺"
+   - For "care at home": Return "What type of home care service do you need? We offer nurse visits, physiotherapy, elderly care, and post-surgery care. 👨‍⚕️"
+   - For "medicine delivery": Return "What type of medicine delivery do you need? We offer regular medicine delivery, urgent medicine delivery, or prescription upload services. 💊"
+
+2. If sub_category exists but date is missing:
+   Return response: "What date would you like to schedule your appointment for? 📅"
+
+3. If date exists but time is missing:
+   Return response: "What time would you prefer? We have slots in the morning (9 AM), afternoon (3 PM), or evening (6 PM). ⏰"
+
+4. If date and time exist but location is missing:
+   Return response: "Please share your location or type your address for your appointment. 📍"
+
+Follow this sequence strictly - only ask ONE question at a time and wait for the user's response.
+Always check fields in order: sub_category → date → time → location.
 
 Return only JSON:
 {{ "intent":"...", "sentiment":"...", "entities":{{...}}, "response":"..." }}
