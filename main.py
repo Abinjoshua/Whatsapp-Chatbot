@@ -147,6 +147,48 @@ def sanitize_text_value_local(s):
     s = re.sub(r'\s+', ' ', s).strip()
     return s
 
+# Build a user-friendly appointment summary.
+# For medicine delivery, show prescription/medicine details instead of sub-service.
+def compose_summary(sess: dict) -> str:
+    def val(k):
+        return sess.get(k)
+
+    lines = []
+    if val('date'):
+        lines.append(f"• Date: {val('date')}")
+    if val('time'):
+        lines.append(f"• Time: {val('time')}")
+    if val('age'):
+        lines.append(f"• Age: {val('age')}")
+    if val('category'):
+        lines.append(f"• Service: {str(val('category')).title()}")
+
+    # Details line — prefer prescription/medicine text for medicine delivery
+    cat_norm = str(val('category') or '').strip().lower()
+    if cat_norm == 'medicine delivery':
+        if val('prescription_uploaded'):
+            lines.append("• Prescription: received")
+        elif val('medicine_text'):
+            lines.append(f"• Medicine details: {val('medicine_text')}")
+        else:
+            sc = val('sub_category')
+            if sc:
+                if str(sc).lower() == "send doctor's prescription":
+                    lines.append("• Prescription: pending upload")
+                elif str(sc).lower() == 'type the medicine':
+                    lines.append("• Medicine details: pending")
+                else:
+                    lines.append(f"• Details: {str(sc).title()}")
+    else:
+        sc = val('sub_category')
+        if sc:
+            lines.append(f"• Sub-service: {str(sc).title()}")
+
+    if val('location'):
+        lines.append(f"• Location: {val('location')}")
+
+    return "\n".join(lines)
+
 @app.get("/webhook")
 async def verify(request: Request):
     params = dict(request.query_params)
@@ -207,6 +249,13 @@ async def webhook_handler(request: Request):
             elif "list_reply" in interactive_obj:
                 user_text = interactive_obj["list_reply"].get("id", "")
         print(f"💬 Raw user text / id: {user_text}")
+        
+        # Debug: Log message types for media detection
+        print(f"📋 Message keys: {list(message.keys())}")
+        if "image" in message:
+            print("🖼️ Image detected in message")
+        if "document" in message:
+            print("📄 Document detected in message")
 
         # handle location messages first
         if "location" in message:
@@ -232,7 +281,7 @@ async def webhook_handler(request: Request):
                 friendly_loc = sess.get("location_address") or sess.get("location_coords")
                 send_text(user_number, humanize_response("", kind="ack_location", location=friendly_loc))
                 if all([sess.get("date"), sess.get("time"), sess.get("category"), sess.get("sub_category"), sess.get("location"), sess.get("age")]) and sess.get("time") not in [None,"","00:00"]:
-                    summary_text = (f"• Date: {sess['date']}\n• Time: {sess['time']}\n• Age: {sess.get('age')}\n• Service: {sess['category'].title()}\n• Sub-service: {sess['sub_category'].title()}\n• Location: {sess['location']}")
+                    summary_text = compose_summary(sess)
                     send_text(user_number, humanize_response("", kind="confirm_summary", summary=summary_text, name=sess.get("name")))
                     send_buttons(user_number, "Confirm booking?", {"confirm_yes":"Yes","confirm_no":"No"})
                     sess["state"]="confirming"
@@ -275,7 +324,10 @@ async def webhook_handler(request: Request):
                     if cat=="care at home":
                         send_options(user_number, "Care at Home", "Select a subcategory for Care at Home:", {"nurse_visit":"Nurse Visit","physiotherapy":"Physiotherapy","elderly_care":"Elderly Care","post_surgery_care":"Post Surgery Care"})
                     elif cat=="medicine delivery":
-                        send_options(user_number, "Medicine Delivery", "Select a subcategory for Medicine Delivery:", {"regular_meds":"Regular Medicines","urgent_meds":"Urgent Medicines","prescription_upload":"Upload Prescription"})
+                        send_options(user_number, "Medicine Delivery", "How would you like to provide the medicine details?", {
+                            "send_doctors_prescription": "Send Prescription",
+                            "type_the_medicine": "Type Medicine"
+                        })
                     elif cat=="lab test":
                         send_options(user_number, "Lab Test", "Select a subcategory for Lab Test:", {"blood_test":"Blood Test","urine_test":"Urine Test","covid_test":"COVID Test","full_body_checkup":"Full Body Checkup"})
                     else:
@@ -287,6 +339,31 @@ async def webhook_handler(request: Request):
         if normalized in {"yes","y","confirm","ok","sure"} or user_text == "confirm_yes":
             sess = session_data.get(user_number,{}) or {}
             if sess and sess.get("state") == "confirming":
+                # Build a structured record of the confirmed session
+                record = {
+                    "confirmed_at": datetime.now().isoformat(),
+                    "user_number": user_number,
+                    "name": sess.get("name"),
+                    "age": sess.get("age"),
+                    "category": sess.get("category"),
+                    "sub_category": sess.get("sub_category"),
+                    "date": sess.get("date"),
+                    "time": sess.get("time"),
+                    "location_address": sess.get("location_address"),
+                    "location_coords": sess.get("location_coords"),
+                    "state": sess.get("state"),
+                    "last_interaction": sess.get("last_interaction")
+                }
+                try:
+                    print("\n✅ Booking Confirmed — Structured Session Record")
+                    print(json.dumps(record, indent=2, ensure_ascii=False))
+                    # Also persist a snapshot for debugging/ops
+                    filename = f"session_{user_number}.json"
+                    with open(filename, "w", encoding="utf-8") as f:
+                        json.dump(record, f, indent=2, ensure_ascii=False)
+                except Exception as e:
+                    print("⚠️ Failed to write structured session record:", e)
+
                 send_text(user_number, humanize_response("", kind="confirmation_yes", name=sess.get("name")))
                 session_data[user_number] = make_empty_session()
                 return {"status":"ok"}
@@ -305,7 +382,9 @@ async def webhook_handler(request: Request):
                 send_text(user_number, "Okay — if you need anything later, just say hi.")
                 return {"status":"ok"}
 
-        if not user_number or not user_text:
+        # Allow media messages (image/document) even when there's no textual content
+        has_media = ("image" in message) or ("document" in message)
+        if not user_number or (not user_text and not has_media):
             print("⚠️ Missing user number or text.")
             return {"status":"ignored"}
 
@@ -341,7 +420,7 @@ async def webhook_handler(request: Request):
             session_data[user_number]=sess
             send_text(user_number, humanize_response("", kind="ack_location", location=address_text, name=sess.get("name")))
             if all([sess.get("date"), sess.get("time"), sess.get("category"), sess.get("sub_category"), sess.get("location"), sess.get("age")]) and sess.get("time") not in [None,"","00:00"]:
-                summary_text = (f"• Date: {sess['date']}\n• Time: {sess['time']}\n• Age: {sess.get('age')}\n• Service: {sess['category'].title()}\n• Sub-service: {sess['sub_category'].title()}\n• Location: {sess['location']}")
+                summary_text = compose_summary(sess)
                 send_text(user_number, humanize_response("", kind="confirm_summary", summary=summary_text, name=sess.get("name")))
                 send_buttons(user_number, "Confirm booking?", {"confirm_yes":"Yes","confirm_no":"No"})
                 sess["state"]="confirming"
@@ -372,7 +451,10 @@ async def webhook_handler(request: Request):
                 if cat=="care at home":
                     send_options(user_number, "Care at Home", "Select a subcategory for Care at Home:", {"nurse_visit":"Nurse Visit","physiotherapy":"Physiotherapy","elderly_care":"Elderly Care","post_surgery_care":"Post Surgery Care"})
                 elif cat=="medicine delivery":
-                    send_options(user_number, "Medicine Delivery", "Select a subcategory for Medicine Delivery:", {"regular_meds":"Regular Medicines","urgent_meds":"Urgent Medicines","prescription_upload":"Upload Prescription"})
+                    send_options(user_number, "Medicine Delivery", "How would you like to provide the medicine details?", {
+                        "send_doctors_prescription": "Send Prescription",
+                        "type_the_medicine": "Type Medicine"
+                    })
                 elif cat=="lab test":
                     send_options(user_number, "Lab Test", "Select a subcategory for Lab Test:", {"blood_test":"Blood Test","urine_test":"Urine Test","covid_test":"COVID Test","full_body_checkup":"Full Body Checkup"})
                 else:
@@ -410,7 +492,7 @@ async def webhook_handler(request: Request):
             send_text(user_number, f"Thanks — noted age: {age_val}.")
             # If all required fields now present, show summary & ask confirmation
             if all([sess.get("date"), sess.get("time"), sess.get("category"), sess.get("sub_category"), sess.get("location"), sess.get("age")]) and sess.get("time") not in [None, "", "00:00"]:
-                summary_text = (f"• Date: {sess['date']}\n• Time: {sess['time']}\n• Age: {sess.get('age')}\n• Service: {sess['category'].title()}\n• Sub-service: {sess['sub_category'].title()}\n• Location: {sess['location']}")
+                summary_text = compose_summary(sess)
                 send_text(user_number, humanize_response("", kind="confirm_summary", summary=summary_text, name=sess.get("name")))
                 send_buttons(user_number, "Confirm booking?", {"confirm_yes":"Yes","confirm_no":"No"})
                 sess["state"] = "confirming"
@@ -422,6 +504,201 @@ async def webhook_handler(request: Request):
         for prefix in ("date_","time_","confirm_","btn_"):
             if mapped_text.startswith(prefix):
                 mapped_text = mapped_text[len(prefix):]; break
+
+        # Subcategory selection handlers for Medicine Delivery
+        if mapped_text in {"send doctor's prescription", "type the medicine"}:
+            sess = session_data.get(user_number) or make_empty_session()
+            sess["sub_category"] = mapped_text
+            if mapped_text == "send doctor's prescription":
+                sess["awaiting_field"] = "prescription_upload"
+                session_data[user_number] = sess
+                send_text(user_number, "Please send the prescription as a PDF or image.")
+                return {"status":"ok"}
+            else:
+                sess["awaiting_field"] = "medicine_text"
+                session_data[user_number] = sess
+                send_text(user_number, "Please type the medicine name(s) you need.")
+                return {"status":"ok"}
+
+        # Direct category selection handler for interactive buttons
+        if mapped_text in {"care at home", "medicine delivery", "lab test"}:
+            # Update session with chosen category and prompt subcategory options
+            prev_entities = session_data.get(user_number) or make_empty_session()
+            prev_entities["category"] = mapped_text
+            prev_entities["awaiting_field"] = "sub_category"
+            session_data[user_number] = prev_entities
+
+            if mapped_text == "care at home":
+                send_options(user_number, "Care at Home", "Select a subcategory for Care at Home:", {
+                    "nurse_visit": "Nurse Visit",
+                    "physiotherapy": "Physiotherapy",
+                    "elderly_care": "Elderly Care",
+                    "post_surgery_care": "Post Surgery Care"
+                })
+            elif mapped_text == "medicine delivery":
+                send_options(user_number, "Medicine Delivery", "How would you like to provide the medicine details?", {
+                    "send_doctors_prescription": "Send Prescription",
+                    "type_the_medicine": "Type Medicine"
+                })
+            else:  # lab test
+                send_options(user_number, "Lab Test", "Select a subcategory for Lab Test:", {
+                    "blood_test": "Blood Test",
+                    "urine_test": "Urine Test",
+                    "covid_test": "COVID Test",
+                    "full_body_checkup": "Full Body Checkup"
+                })
+            return {"status":"ok"}
+
+        # Direct subcategory selection handlers for Care at Home and Lab Test
+        if mapped_text in {"nurse visit", "physiotherapy", "elderly care", "post surgery care",
+                           "blood test", "urine test", "covid test", "full body checkup"}:
+            sess = session_data.get(user_number) or make_empty_session()
+            # infer category from choice if not already set
+            if mapped_text in {"nurse visit", "physiotherapy", "elderly care", "post surgery care"}:
+                sess.setdefault("category", "care at home")
+            else:
+                sess.setdefault("category", "lab test")
+            # set chosen subcategory and clear any pending prompt for it
+            sess["sub_category"] = mapped_text
+            if sess.get("awaiting_field") == "sub_category":
+                sess["awaiting_field"] = None
+            session_data[user_number] = sess
+
+            # Ask the next missing field in order: date -> time -> age -> location
+            priority = ["date", "time", "age", "location"]
+            def is_missing(field):
+                val = sess.get(field)
+                return (val is None) or (str(val).strip() == "") or (field == "time" and val == "00:00")
+            next_field = None
+            for f in priority:
+                if is_missing(f):
+                    next_field = f
+                    break
+            if next_field == "date":
+                send_buttons(user_number, "Please select appointment date:", {
+                    "date_today": "Today",
+                    "date_tomorrow": "Tomorrow",
+                    "date_pick": "Pick another date"
+                })
+                sess["awaiting_field"] = "date"
+                session_data[user_number] = sess
+                return {"status":"ok"}
+            elif next_field == "time":
+                send_buttons(user_number, "Select preferred time:", {
+                    "time_morning": "Morning",
+                    "time_afternoon": "Afternoon",
+                    "time_evening": "Evening"
+                })
+                sess["awaiting_field"] = "time"
+                session_data[user_number] = sess
+                return {"status":"ok"}
+            elif next_field == "age":
+                send_text(user_number, "Please type the patient's age (in years).")
+                sess["awaiting_field"] = "age"
+                session_data[user_number] = sess
+                return {"status":"ok"}
+            elif next_field == "location":
+                send_text(user_number, "Please share your location (📎 → Location) or type your address.")
+                sess["awaiting_field"] = "location"
+                sess["awaiting_address"] = True
+                session_data[user_number] = sess
+                return {"status":"ok"}
+
+        # If user is typing medicine names, capture and move forward
+        if not is_interactive:
+            sess = session_data.get(user_number) or make_empty_session()
+            if sess.get("awaiting_field") == "medicine_text" and (user_text or "").strip():
+                sess["medicine_text"] = sanitize_text_value_local(user_text)
+                sess["awaiting_field"] = None
+                # If category not set, default to medicine delivery for this flow
+                if not sess.get("category"):
+                    sess["category"] = "medicine delivery"
+                if not sess.get("sub_category"):
+                    sess["sub_category"] = "type the medicine"
+                session_data[user_number] = sess
+                send_text(user_number, humanize_response("Medicine details noted.", kind="friendly_ack", summary=sess.get("medicine_text")))
+
+                # Ask next missing field(s)
+                priority = ["date", "time", "age", "location"]
+                def is_missing(field):
+                    val = sess.get(field)
+                    return (val is None) or (str(val).strip() == "") or (field == "time" and val == "00:00")
+                next_field = None
+                for f in priority:
+                    if is_missing(f):
+                        next_field = f
+                        break
+                if next_field == "date":
+                    send_buttons(user_number, "Please select appointment date:", {"date_today":"Today","date_tomorrow":"Tomorrow","date_pick":"Pick another date"})
+                    sess["awaiting_field"] = "date"
+                    session_data[user_number] = sess
+                    return {"status":"ok"}
+                elif next_field == "time":
+                    send_buttons(user_number, "Select preferred time:", {"time_morning":"Morning","time_afternoon":"Afternoon","time_evening":"Evening"})
+                    sess["awaiting_field"] = "time"
+                    session_data[user_number] = sess
+                    return {"status":"ok"}
+                elif next_field == "age":
+                    send_text(user_number, "Please type the patient's age (in years).")
+                    sess["awaiting_field"] = "age"
+                    session_data[user_number] = sess
+                    return {"status":"ok"}
+                elif next_field == "location":
+                    send_text(user_number, "Please share your location (📎 → Location) or type your address.")
+                    sess["awaiting_field"] = "location"
+                    session_data[user_number] = sess
+                    return {"status":"ok"}
+
+        # Handle prescription uploads: image or document
+        print(f"🔍 Checking for media - awaiting_field: {prev_entities.get('awaiting_field') if prev_entities else 'None'}")
+        if "image" in message or "document" in message:
+            print("📁 Media detected, checking session...")
+            sess = session_data.get(user_number) or make_empty_session()
+            print(f"📊 Session awaiting_field: {sess.get('awaiting_field')}")
+            if sess.get("awaiting_field") == "prescription_upload":
+                media_kind = "image" if "image" in message else "document"
+                media_obj = message.get(media_kind) or {}
+                sess["prescription_uploaded"] = True
+                sess["prescription_media_id"] = media_obj.get("id")
+                sess["awaiting_field"] = None
+                print(f"✅ Prescription media processed - media_id: {media_obj.get('id')}")
+                if not sess.get("category"):
+                    sess["category"] = "medicine delivery"
+                if not sess.get("sub_category"):
+                    sess["sub_category"] = "send doctor's prescription"
+                session_data[user_number] = sess
+                send_text(user_number, "Thanks — prescription received. ✅")
+
+                # Ask next missing field(s)
+                priority = ["date", "time", "age", "location"]
+                def is_missing(field):
+                    val = sess.get(field)
+                    return (val is None) or (str(val).strip() == "") or (field == "time" and val == "00:00")
+                next_field = None
+                for f in priority:
+                    if is_missing(f):
+                        next_field = f
+                        break
+                if next_field == "date":
+                    send_buttons(user_number, "Please select appointment date:", {"date_today":"Today","date_tomorrow":"Tomorrow","date_pick":"Pick another date"})
+                    sess["awaiting_field"] = "date"
+                    session_data[user_number] = sess
+                    return {"status":"ok"}
+                elif next_field == "time":
+                    send_buttons(user_number, "Select preferred time:", {"time_morning":"Morning","time_afternoon":"Afternoon","time_evening":"Evening"})
+                    sess["awaiting_field"] = "time"
+                    session_data[user_number] = sess
+                    return {"status":"ok"}
+                elif next_field == "age":
+                    send_text(user_number, "Please type the patient's age (in years).")
+                    sess["awaiting_field"] = "age"
+                    session_data[user_number] = sess
+                    return {"status":"ok"}
+                elif next_field == "location":
+                    send_text(user_number, "Please share your location (📎 → Location) or type your address.")
+                    sess["awaiting_field"] = "location"
+                    session_data[user_number] = sess
+                    return {"status":"ok"}
 
         if mapped_text == "type_address":
             sess = session_data.get(user_number) or make_empty_session()
@@ -521,10 +798,9 @@ async def webhook_handler(request: Request):
                         "post_surgery_care": "Post Surgery Care"
                     })
                 elif cat == "medicine delivery":
-                    send_options(user_number, "Medicine Delivery", "Select a subcategory for Medicine Delivery:", {
-                        "regular_meds": "Regular Medicines",
-                        "urgent_meds": "Urgent Medicines",
-                        "prescription_upload": "Upload Prescription"
+                    send_options(user_number, "Medicine Delivery", "How would you like to provide the medicine details?", {
+                        "send_doctors_prescription": "Send Prescription",
+                        "type_the_medicine": "Type Medicine"
                     })
                 elif cat == "lab test":
                     send_options(user_number, "Lab Test", "Select a subcategory for Lab Test:", {
@@ -544,8 +820,7 @@ async def webhook_handler(request: Request):
                 # nothing left in priority list; if everything filled, prompt confirmation
                 if all([prev_entities.get("date"), prev_entities.get("time"), prev_entities.get("category"),
                         prev_entities.get("sub_category"), prev_entities.get("location")]) and prev_entities.get("time") not in [None, "", "00:00"]:
-                    summary_text = (f"• Date: {prev_entities['date']}\n• Time: {prev_entities['time']}\n• Service: {prev_entities['category'].title()}\n"
-                                    f"• Sub-service: {prev_entities['sub_category'].title()}\n• Location: {prev_entities['location']}")
+                    summary_text = compose_summary(prev_entities)
                     send_text(user_number, humanize_response("", kind="confirm_summary", summary=summary_text, name=prev_entities.get("name")))
                     send_buttons(user_number, "Confirm booking?", {"confirm_yes":"Yes","confirm_no":"No"})
                     prev_entities["state"] = "confirming"
@@ -623,10 +898,9 @@ async def webhook_handler(request: Request):
                         "post_surgery_care": "Post Surgery Care"
                     })
                 elif cat == "medicine delivery":
-                    send_options(user_number, "Medicine Delivery", "Select a subcategory for Medicine Delivery:", {
-                        "regular_meds": "Regular Medicines",
-                        "urgent_meds": "Urgent Medicines",
-                        "prescription_upload": "Upload Prescription"
+                    send_options(user_number, "Medicine Delivery", "How would you like to provide the medicine details?", {
+                        "send_doctors_prescription": "Send Prescription",
+                        "type_the_medicine": "Type Medicine"
                     })
                 elif cat == "lab test":
                     send_options(user_number, "Lab Test", "Select a subcategory for Lab Test:", {
@@ -642,8 +916,7 @@ async def webhook_handler(request: Request):
                 # nothing else needed — if everything filled, confirm
                 if all([prev_entities.get("date"), prev_entities.get("time"), prev_entities.get("category"),
                         prev_entities.get("sub_category"), prev_entities.get("location"), prev_entities.get("age")]):
-                    summary_text = (f"• Date: {prev_entities['date']}\n• Time: {prev_entities['time']}\n• Age: {prev_entities.get('age')}\n• Service: {prev_entities['category'].title()}\n"
-                                    f"• Sub-service: {prev_entities['sub_category'].title()}\n• Location: {prev_entities['location']}")
+                    summary_text = compose_summary(prev_entities)
                     send_text(user_number, humanize_response("", kind="confirm_summary", summary=summary_text, name=prev_entities.get("name")))
                     send_buttons(user_number, "Confirm booking?", {"confirm_yes":"Yes","confirm_no":"No"})
                     prev_entities["state"] = "confirming"
@@ -729,7 +1002,10 @@ async def webhook_handler(request: Request):
                     if cat == "care at home":
                         send_options(user_number, "Care at Home", "Select a subcategory for Care at Home:", {"nurse_visit":"Nurse Visit","physiotherapy":"Physiotherapy","elderly_care":"Elderly Care","post_surgery_care":"Post Surgery Care"})
                     elif cat == "medicine delivery":
-                        send_options(user_number, "Medicine Delivery", "Select a subcategory for Medicine Delivery:", {"regular_meds":"Regular Medicines","urgent_meds":"Urgent Medicines","prescription_upload":"Upload Prescription"})
+                        send_options(user_number, "Medicine Delivery", "How would you like to provide the medicine details?", {
+                            "send_doctors_prescription": "Send Prescription",
+                            "type_the_medicine": "Type Medicine"
+                        })
                     elif cat == "lab test":
                         send_options(user_number, "Lab Test", "Select a subcategory for Lab Test:", {"blood_test":"Blood Test","urine_test":"Urine Test","covid_test":"COVID Test","full_body_checkup":"Full Body Checkup"})
                     else:
@@ -793,10 +1069,8 @@ async def webhook_handler(request: Request):
             need_time = (not ent.get("time")) or ent.get("time") == "00:00"
             return need_date or need_time
 
-        # If the LLM classified this as a general query, optionally send it, but suppress
-        # when date/time will be prompted via buttons to avoid mixed guidance
         reply_sent = False
-        if intent == "general_query" and not missing_date_time(entities):
+        if intent == "general_query":
             send_text(user_number, reply_text)
             reply_sent = True
 
@@ -821,7 +1095,7 @@ async def webhook_handler(request: Request):
                     })
                     return {"status":"ok"}
 
-                summary_text = (f"• Date: {sess['date']}\n• Time: {sess['time']}\n• Service: {sess['category'].title() if sess.get('category') else ''}\n• Sub-service: {sess['sub_category'].title() if sess.get('sub_category') else ''}\n• Location: {sess.get('location','(not provided)')}")
+                summary_text = compose_summary(sess)
                 send_text(user_number, humanize_response("", kind="confirm_summary", summary=summary_text, name=sess.get("name")))
                 send_buttons(user_number, "Confirm booking?", {"confirm_yes":"Yes","confirm_no":"No"})
                 sess["state"]="confirming"
@@ -844,7 +1118,10 @@ async def webhook_handler(request: Request):
             if cat=="care at home":
                 send_options(user_number, "Care at Home", "Select a subcategory for Care at Home:", {"nurse_visit":"Nurse Visit","physiotherapy":"Physiotherapy","elderly_care":"Elderly Care","post_surgery_care":"Post Surgery Care"})
             elif cat=="medicine delivery":
-                send_options(user_number, "Medicine Delivery", "Select a subcategory for Medicine Delivery:", {"regular_meds":"Regular Medicines","urgent_meds":"Urgent Medicines","prescription_upload":"Upload Prescription"})
+                send_options(user_number, "Medicine Delivery", "How would you like to provide the medicine details?", {
+                    "send_doctors_prescription": "Send Prescription",
+                    "type_the_medicine": "Type Medicine"
+                })
             elif cat=="lab test":
                 send_options(user_number, "Lab Test", "Select a subcategory for Lab Test:", {"blood_test":"Blood Test","urine_test":"Urine Test","covid_test":"COVID Test","full_body_checkup":"Full Body Checkup"})
             else:
@@ -913,10 +1190,9 @@ async def webhook_handler(request: Request):
                     entities["awaiting_field"] = "sub_category"
                     session_data[user_number] = entities
                 elif cat == "medicine delivery":
-                    send_options(user_number, "Medicine Delivery", "Select a subcategory for Medicine Delivery:", {
-                        "regular_meds": "Regular Medicines",
-                        "urgent_meds": "Urgent Medicines",
-                        "prescription_upload": "Upload Prescription"
+                    send_options(user_number, "Medicine Delivery", "How would you like to provide the medicine details?", {
+                        "send_doctors_prescription": "Send Prescription",
+                        "type_the_medicine": "Type Medicine"
                     })
                     entities["awaiting_field"] = "sub_category"
                     session_data[user_number] = entities
@@ -950,7 +1226,7 @@ async def webhook_handler(request: Request):
                     session_data[user_number] = sess
 
             elif all([entities.get("date"), entities.get("time"), entities.get("category"), entities.get("sub_category"), entities.get("location"), entities.get("age")]) and entities.get("time") not in [None, "", "00:00"]:
-                summary_text = (f"• Date: {entities['date']}\n• Time: {entities['time']}\n• Age: {entities.get('age')}\n• Service: {entities['category'].title()}\n• Sub-service: {entities['sub_category'].title()}\n• Location: {entities['location']}")
+                summary_text = compose_summary(entities)
                 send_text(user_number, humanize_response("", kind="confirm_summary", summary=summary_text, name=entities.get("name")))
                 send_buttons(user_number, "Confirm booking?", {"confirm_yes":"Yes","confirm_no":"No"})
                 sess = session_data.get(user_number, {})

@@ -18,7 +18,7 @@ CATEGORY_MAP = {
         "nurse visit", "physiotherapy", "elderly care", "post surgery care"
     ],
     "medicine delivery": [
-        "regular medicines", "urgent medicines", "upload prescription"
+        "send doctor's prescription", "type the medicine"
     ],
     "lab test": [
         "blood test", "urine test", "covid test", "full body checkup"
@@ -40,9 +40,8 @@ BUTTON_MAPPINGS = {
     "physiotherapy": "physiotherapy",
     "elderly_care": "elderly care",
     "post_surgery_care": "post surgery care",
-    "regular_meds": "regular medicines",
-    "urgent_meds": "urgent medicines",
-    "prescription_upload": "upload prescription",
+    "send_doctors_prescription": "send doctor's prescription",
+    "type_the_medicine": "type the medicine",
     "blood_test": "blood test",
     "urine_test": "urine test",
     "covid_test": "covid test",
@@ -230,10 +229,10 @@ def rule_based_extract(user_text: str, previous_entities: dict):
             detected_sub = "physiotherapy"
     elif any(k in ut for k in medicine_keywords):
         detected_category = "medicine delivery"
-        if "urgent" in ut:
-            detected_sub = "urgent medicines"
-        elif "refill" in ut or "regular" in ut:
-            detected_sub = "regular medicines"
+        if "prescription" in ut:
+            detected_sub = "send doctor's prescription"
+        elif "type" in ut and "medicine" in ut:
+            detected_sub = "type the medicine"
     elif any(k in ut for k in lab_keywords):
         detected_category = "lab test"
         for sub in CATEGORY_MAP.get("lab test", []):
@@ -311,58 +310,32 @@ def rule_based_extract(user_text: str, previous_entities: dict):
 # Conversational fallback (LLM)
 # -------------------------------
 def conversational_answer(user_text: str, previous_entities: dict):
-    """
-    Short, empathetic reply for general queries or when extraction didn't apply.
-    """
     try:
-        qa_prompt = f"""
-You are Warmy, a warm and friendly healthcare assistant on WhatsApp. Here's your core identity and personality:
-
-SPECIAL RESPONSE FOR IDENTITY QUESTIONS:
-IF the user asks "what is warmy" OR "who are you" OR similar identity questions,
-YOU MUST RESPOND EXACTLY WITH THIS TEMPLATE:
-🤖✨ I'm Warmy, your personal healthcare assistant! I'm here to help you book medical services like home care, medicine delivery, and lab tests. I can schedule appointments, find nearby staff, and make sure you get the care you need. How can I assist you today? 🏥💙
-
-For all other questions:
-IDENTITY AND SERVICES:
-- You are Warmy, a specialized healthcare booking assistant
-- Your core services are home care, medicine delivery, and lab tests
-- You handle scheduling and find nearby medical staff
-
-PERSONALITY:
-- Warm, caring, and detail-oriented
-- Always be specific about available services
-- Use healthcare emojis thoughtfully (🏥💊🩺)
-- Keep responses friendly but professional
-
-CAPABILITIES:
-- Schedule medical appointments
-- Find nearby healthcare staff
-- Arrange medicine delivery
-- Book lab tests and home care
-- Handle location-based service routing
-
-User said: "{user_text}"
-
-Respond in 1-2 short sentences. If asked about your identity, explain your healthcare focus.
-For booking requests, politely ask for any missing information.
-For general queries, be warm and helpful while staying healthcare-focused.
-Use healthcare-themed emojis when relevant (🏥 💊 🩺 💉 ⚕️ 💙).
-"""
+        emotion, sentiment = analyze_emotion_and_sentiment(user_text)
+        qa_prompt = (
+            "You are Warmy, a healthcare assistant on WhatsApp. "
+            "Respond briefly in 1–2 sentences, with tone guided by the user's emotion. "
+            f"Emotion: {emotion}. Sentiment: {sentiment}. "
+            "If asked 'who are you' or 'what is warmy', reply with the identity template: "
+            "🤖✨ I'm Warmy, your personal healthcare assistant! I'm here to help you book medical services like home care, medicine delivery, and lab tests. I can schedule appointments, find nearby staff, and make sure you get the care you need. How can I assist you today? 🏥💙 "
+            f"User: \"{user_text}\" "
+            "Be warm and practical. If the text indicates distress (sad/angry/urgent), acknowledge it and offer help within healthcare context."
+        )
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "You are Warmy, a warm and friendly healthcare assistant."},
                 {"role": "user", "content": qa_prompt}
             ],
-            temperature=0.35
+            temperature=0.2
         )
         reply = resp.choices[0].message.content.strip()
         return {
             "intent": "general_query",
-            "sentiment": None,
+            "sentiment": sentiment,
             "entities": previous_entities,
-            "response": reply
+            "response": reply,
+            "emotion": emotion
         }
     except Exception as e:
         print("❌ conversational_answer LLM error:", e)
@@ -370,7 +343,8 @@ Use healthcare-themed emojis when relevant (🏥 💊 🩺 💉 ⚕️ 💙).
             "intent": "general_query",
             "sentiment": None,
             "entities": previous_entities,
-            "response": "Sorry — I’m having a little trouble. Could you rephrase?"
+            "response": "Sorry — I’m having a little trouble. Could you rephrase?",
+            "emotion": "neutral"
         }
 
 # -------------------------------
@@ -501,7 +475,7 @@ IMPORTANT BOOKING FLOW (Ask only ONE question at a time):
 1. If category exists but sub_category is missing, respond based on category:
    - For "lab test": Return "Which lab test would you like to book? We offer blood tests, urine tests, COVID tests, and full body checkups. 🩺"
    - For "care at home": Return "What type of home care service do you need? We offer nurse visits, physiotherapy, elderly care, and post-surgery care. 👨‍⚕️"
-   - For "medicine delivery": Return "What type of medicine delivery do you need? We offer regular medicine delivery, urgent medicine delivery, or prescription upload services. 💊"
+   - For "medicine delivery": Return "How would you like to provide the medicine details? You can send a doctor's prescription or type the medicine name. 💊"
 
 2. If sub_category exists but date is missing:
    Return response: "What date would you like to schedule your appointment for? 📅"

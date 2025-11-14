@@ -1,16 +1,14 @@
 {
-  "name": null,
-  "age": null,
-  "date": null,
-  "time": null,
-  "category": null,
-  "sub_category": null,
-  "location": null,
+  "confirmed_at": "2025-11-14T10:53:43.994343",
+  "user_number": "917994643726",
+  "name": "Abin Joshua Hermon",
+  "age": "35",
+  "category": "care at home",
+  "sub_category": "physiotherapy",
+  "date": "2025-11-15",
+  "time": "15:00",
+  "location_address": "Hih",
   "location_coords": null,
-  "location_address": null,
-  "awaiting_address": false,
-  "confirmed": false,
-  "greeted": false,
-  "state": "main_menu",
-  "last_interaction": null
+  "state": "confirming",
+  "last_interaction": "typed_address"
 }
