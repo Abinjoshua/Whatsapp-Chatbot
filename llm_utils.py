@@ -309,9 +309,28 @@ def rule_based_extract(user_text: str, previous_entities: dict):
 # -------------------------------
 # Conversational fallback (LLM)
 # -------------------------------
+def fast_emotion_and_sentiment(user_text: str):
+    try:
+        t = (user_text or "").lower()
+        anger_words = ["angry","upset","furious","mad","annoyed","rage","irritated"]
+        sad_words = ["sad","depressed","down","heartbroken","unhappy","cry","pain"]
+        urgent_words = ["urgent","asap","immediately","right now","emergency","help","fast"]
+        happy_words = ["thanks","great","awesome","love","perfect","good","happy"]
+        if any(w in t for w in urgent_words):
+            return "urgent","negative"
+        if any(w in t for w in anger_words):
+            return "angry","negative"
+        if any(w in t for w in sad_words):
+            return "sad","negative"
+        if any(w in t for w in happy_words):
+            return "happy","positive"
+        return "neutral","neutral"
+    except Exception:
+        return "neutral","neutral"
+
 def conversational_answer(user_text: str, previous_entities: dict):
     try:
-        emotion, sentiment = analyze_emotion_and_sentiment(user_text)
+        emotion, sentiment = fast_emotion_and_sentiment(user_text)
         qa_prompt = (
             "You are Warmy, a healthcare assistant on WhatsApp. "
             "Respond briefly in 1–2 sentences, with tone guided by the user's emotion. "
@@ -521,7 +540,7 @@ Examples:
         print("❌ LLM error in process_user_message:", e)
         # fallback to conversational answer
         conv = conversational_answer(user_text, previous_entities)
-        emotion, sentiment = analyze_emotion_and_sentiment(user_text)
+        emotion, sentiment = fast_emotion_and_sentiment(user_text)
         conv["emotion"], conv["sentiment"] = emotion, sentiment
         conv["response"] = humanize_response(conv.get("response",""), name=previous_entities.get("name"))
         return conv
@@ -569,7 +588,7 @@ Examples:
     result["entities"] = merged
 
     # emotion probe & humanize
-    emotion, sentiment = analyze_emotion_and_sentiment(user_text)
+    emotion, sentiment = fast_emotion_and_sentiment(user_text)
     result["emotion"] = emotion
     result["sentiment"] = sentiment
 

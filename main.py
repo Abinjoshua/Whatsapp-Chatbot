@@ -203,7 +203,12 @@ async def webhook_handler(request: Request):
     try:
         data = await request.json()
         print("\n================= 🌐 Incoming Webhook =================")
-        print(json.dumps(data, indent=2))
+        try:
+            obj = data.get("object")
+            has_messages = bool(((data.get("entry") or [{}])[0].get("changes") or [{}])[0].get("value", {}).get("messages"))
+            print({"object": obj, "has_messages": has_messages})
+        except Exception:
+            print("incoming webhook received")
 
         entries = data.get("entry") or []
         if not entries:
