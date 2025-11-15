@@ -8,9 +8,14 @@ from llm_utils import process_user_message, BUTTON_MAPPINGS, humanize_response, 
 from datetime import datetime, timedelta
 from typing import Optional
 import re
+from controllers.node_controller import send_appointment_to_node
 
-load_dotenv()
+
+
+
+load_dotenv()   
 app = FastAPI()
+
 
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
@@ -361,6 +366,7 @@ async def webhook_handler(request: Request):
                 }
                 try:
                     print("\n✅ Booking Confirmed — Structured Session Record")
+                    send_appointment_to_node(record)
                     print(json.dumps(record, indent=2, ensure_ascii=False))
                     # Also persist a snapshot for debugging/ops
                     filename = f"session_{user_number}.json"
